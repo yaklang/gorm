@@ -4,7 +4,7 @@ import (
 	"testing"
 
 	"github.com/gofrs/uuid"
-	"github.com/jinzhu/gorm"
+	"github.com/yaklang/gorm"
 )
 
 type CalculateField struct {
