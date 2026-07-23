@@ -19,7 +19,15 @@ type BatchUser struct {
 
 func (u *BatchUser) TableName() string { return "batch_users" }
 
-func setupBatchDB(t *testing.T) *sql.DB {
+type BatchDefaultUser struct {
+	ID   int    `gorm:"primary_key"`
+	Name string `gorm:"default:'anonymous'"`
+}
+
+func (u *BatchDefaultUser) TableName() string { return "batch_default_users" }
+
+func setupBatchDB(t testing.TB) *sql.DB {
+	t.Helper()
 	db, err := sql.Open("sqlite3", ":memory:")
 	if err != nil {
 		t.Fatal(err)
@@ -35,6 +43,74 @@ func setupBatchDB(t *testing.T) *sql.DB {
 		t.Fatal(err)
 	}
 	return db
+}
+
+func TestCreateInBatches_MixedPrimaryKeyShapes(t *testing.T) {
+	sqlDB := setupBatchDB(t)
+	defer sqlDB.Close()
+	gormDB, err := Open("sqlite3", sqlDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	users := []*BatchUser{
+		{Name: "generated-before"},
+		{ID: 42, Name: "explicit"},
+		{Name: "generated-after"},
+	}
+	if result := gormDB.CreateInBatches(users, 10); result.Error != nil {
+		t.Fatalf("CreateInBatches failed: %v", result.Error)
+	}
+	wantIDs := []int{1, 42, 43}
+	for i, user := range users {
+		if user.ID != wantIDs[i] {
+			t.Fatalf("user %d ID = %d, want %d", i, user.ID, wantIDs[i])
+		}
+	}
+}
+
+func TestCreateInBatches_NilElementRollsBack(t *testing.T) {
+	sqlDB := setupBatchDB(t)
+	defer sqlDB.Close()
+	gormDB, err := Open("sqlite3", sqlDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	users := []*BatchUser{{Name: "must-not-persist"}, nil}
+	if result := gormDB.CreateInBatches(users, 10); result.Error == nil {
+		t.Fatal("CreateInBatches with a nil element unexpectedly succeeded")
+	}
+	var count int
+	if err := gormDB.Model(&BatchUser{}).Count(&count).Error; err != nil {
+		t.Fatalf("count users: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("count = %d, want 0 after rollback", count)
+	}
+}
+
+func TestMaxCreateBatchRowsHonorsBindLimits(t *testing.T) {
+	tests := []struct {
+		name        string
+		dialect     string
+		columns     int
+		requested   int
+		wantMaxRows int
+	}{
+		{name: "sqlite wide model", dialect: "sqlite3", columns: 100, requested: 500, wantMaxRows: 327},
+		{name: "sqlite narrow model", dialect: "sqlite3", columns: 10, requested: 500, wantMaxRows: 500},
+		{name: "mssql", dialect: "mssql", columns: 30, requested: 500, wantMaxRows: 70},
+		{name: "unknown dialect", dialect: "custom", columns: 100, requested: 500, wantMaxRows: 500},
+		{name: "default values", dialect: "sqlite3", columns: 0, requested: 500, wantMaxRows: 1},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := maxCreateBatchRows(test.dialect, test.columns, test.requested); got != test.wantMaxRows {
+				t.Fatalf("maxCreateBatchRows(%q, %d, %d) = %d, want %d", test.dialect, test.columns, test.requested, got, test.wantMaxRows)
+			}
+		})
+	}
 }
 
 func TestCreateInBatches_StructPtrSlice(t *testing.T) {
@@ -58,10 +134,11 @@ func TestCreateInBatches_StructPtrSlice(t *testing.T) {
 		t.Fatalf("expected 3 rows affected, got %d", result.RowsAffected)
 	}
 
-	// Verify IDs were set.
+	// Verify IDs match the actual SQLite row IDs, not just that they are non-zero.
 	for i, u := range users {
-		if u.ID == 0 {
-			t.Fatalf("user %d (%s) ID not set", i, u.Name)
+		wantID := i + 1
+		if u.ID != wantID {
+			t.Fatalf("user %d (%s) ID = %d, want %d", i, u.Name, u.ID, wantID)
 		}
 	}
 
@@ -205,5 +282,90 @@ func TestCreateInBatches_DefaultSize(t *testing.T) {
 	gormDB.Model(&BatchUser{}).Count(&count)
 	if count != 1200 {
 		t.Fatalf("expected 1200 records, got %d", count)
+	}
+}
+
+func TestCreateInBatches_PreservesDatabaseDefaults(t *testing.T) {
+	sqlDB, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sqlDB.Close()
+
+	_, err = sqlDB.Exec(`CREATE TABLE batch_default_users (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		name TEXT NOT NULL DEFAULT 'anonymous'
+	)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	gormDB, err := Open("sqlite3", sqlDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	users := []*BatchDefaultUser{{}, {Name: "explicit"}}
+	result := gormDB.CreateInBatches(users, 10)
+	if result.Error != nil {
+		t.Fatalf("CreateInBatches failed: %v", result.Error)
+	}
+
+	var names []string
+	if err := gormDB.Model(&BatchDefaultUser{}).Order("id ASC").Pluck("name", &names).Error; err != nil {
+		t.Fatalf("query names: %v", err)
+	}
+	want := []string{"anonymous", "explicit"}
+	if len(names) != len(want) {
+		t.Fatalf("names = %v, want %v", names, want)
+	}
+	for i := range want {
+		if names[i] != want[i] {
+			t.Fatalf("names = %v, want %v", names, want)
+		}
+	}
+}
+
+func BenchmarkCreateRows(b *testing.B) {
+	const rowCount = 500
+	for _, benchmark := range []struct {
+		name  string
+		batch bool
+	}{
+		{name: "CreateOneByOne", batch: false},
+		{name: "CreateInBatches", batch: true},
+	} {
+		b.Run(benchmark.name, func(b *testing.B) {
+			b.StopTimer()
+			sqlDB := setupBatchDB(b)
+			defer sqlDB.Close()
+			gormDB, err := Open("sqlite3", sqlDB)
+			if err != nil {
+				b.Fatal(err)
+			}
+			b.ReportAllocs()
+			b.ReportMetric(rowCount, "rows/op")
+
+			for iteration := 0; iteration < b.N; iteration++ {
+				users := make([]*BatchUser, rowCount)
+				for index := range users {
+					users[index] = &BatchUser{Name: fmt.Sprintf("user-%d-%d", iteration, index), Age: index}
+				}
+
+				b.StartTimer()
+				if benchmark.batch {
+					if result := gormDB.CreateInBatches(users); result.Error != nil {
+						b.Fatal(result.Error)
+					}
+				} else {
+					for _, user := range users {
+						if result := gormDB.Create(user); result.Error != nil {
+							b.Fatal(result.Error)
+						}
+					}
+				}
+				b.StopTimer()
+			}
+		})
 	}
 }
