@@ -150,7 +150,7 @@ func TestCreateInBatches_Empty(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result := gormDB.CreateInBatches([]*BatchUser{}, 100)
+	result := gormDB.CreateInBatches([]*BatchUser{})
 	if result.Error != nil {
 		t.Fatalf("CreateInBatches empty slice should not error: %v", result.Error)
 	}
@@ -178,5 +178,32 @@ func TestCreateInBatches_Hooks(t *testing.T) {
 		if u.CreatedAt.IsZero() {
 			t.Fatalf("BeforeCreate timestamp hook didn't run for %s", u.Name)
 		}
+	}
+}
+
+func TestCreateInBatches_DefaultSize(t *testing.T) {
+	sqlDB := setupBatchDB(t)
+	gormDB, err := Open("sqlite3", sqlDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Use default batchSize (no second arg)
+	users := make([]*BatchUser, 0, 1200)
+	for i := 0; i < 1200; i++ {
+		users = append(users, &BatchUser{Name: fmt.Sprintf("default_%d", i), Age: i})
+	}
+	result := gormDB.CreateInBatches(users)
+	if result.Error != nil {
+		t.Fatalf("CreateInBatches (default size) failed: %v", result.Error)
+	}
+	if result.RowsAffected != 1200 {
+		t.Fatalf("expected 1200 rows affected, got %d", result.RowsAffected)
+	}
+
+	var count int
+	gormDB.Model(&BatchUser{}).Count(&count)
+	if count != 1200 {
+		t.Fatalf("expected 1200 records, got %d", count)
 	}
 }

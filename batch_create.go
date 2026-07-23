@@ -6,19 +6,28 @@ import (
 	"strings"
 )
 
-// CreateInBatches inserts a slice of records in batches of the given size.
+// DefaultCreateBatchSize is the default number of rows per multi-row INSERT
+// when batchSize is not specified or <= 0.
+//
+// This value balances SQLite's bind-parameter limit (32766) and transaction
+// lock duration. For a struct with ~20 columns, 500 * 20 = 10000 < 32766.
+const DefaultCreateBatchSize = 500
+
+// CreateInBatches inserts a slice of records in batches.
 // Each batch is a single multi-row INSERT statement, reducing round-trips
 // from N to ceil(N/batchSize).
 //
 // BeforeSave/BeforeCreate/AfterCreate/AfterSave hooks are called for every
 // element individually, just like v1's Create.
 //
-//	db.CreateInBatches(&users, 100)
-//	db.CreateInBatches(users, 100)   // slice of structs or pointers
-func (s *DB) CreateInBatches(value interface{}, batchSize int) *DB {
-	// Already a *DB, so chain and return.
-	if batchSize <= 0 {
-		batchSize = 100
+// If batchSize <= 0, DefaultCreateBatchSize (500) is used.
+//
+//	db.CreateInBatches(&users)        // uses DefaultCreateBatchSize
+//	db.CreateInBatches(&users, 100)   // explicit batch size
+func (s *DB) CreateInBatches(value interface{}, batchSize ...int) *DB {
+	size := DefaultCreateBatchSize
+	if len(batchSize) > 0 && batchSize[0] > 0 {
+		size = batchSize[0]
 	}
 
 	// Resolve the slice.
@@ -35,15 +44,6 @@ func (s *DB) CreateInBatches(value interface{}, batchSize int) *DB {
 	if n == 0 {
 		return s.clone()
 	}
-
-	// Determine element type for creating per-element scopes.
-	elemType := rv.Type().Elem()
-	isPtr := elemType.Kind() == reflect.Ptr
-	structType := elemType
-	if isPtr {
-		structType = elemType.Elem()
-	}
-	_ = structType
 
 	// Detect if we're already inside a transaction (v1 Begin() fails on a
 	// sql.Tx because it's not a sqlDb). If so, use the current DB directly
@@ -70,8 +70,8 @@ func (s *DB) CreateInBatches(value interface{}, batchSize int) *DB {
 
 	totalRowsAffected := int64(0)
 
-	for start := 0; start < n; start += batchSize {
-		end := start + batchSize
+	for start := 0; start < n; start += size {
+		end := start + size
 		if end > n {
 			end = n
 		}
@@ -158,22 +158,6 @@ func createBatch(txn *DB, rv reflect.Value, start, end int) (int64, error) {
 	// We use a fresh scope per row to collect vars (AddToVars appends to
 	// scope.SQLVars and returns a placeholder).
 	var allPlaceholders []string
-
-	// We reuse the first scope for the INSERT SQL, but need to reset
-	// SQLVars per row. Instead, build manually.
-	// For each element: run hooks, collect field values, build placeholder row.
-	var rowsAffected int64
-
-	// Determine the dialect's placeholder style.
-	// v1 gorm uses ? for most dialects (SQLite, MySQL) and $1,$2 for Postgres.
-	// The AddToVars method handles this. But AddToVars mutates scope.SQLVars.
-	// We'll build our own placeholder + vars to avoid scope state issues.
-
-	dialect := scope.Dialect()
-	_ = dialect
-
-	// For hooks: we need per-element scopes to call BeforeSave/BeforeCreate.
-	// For timestamps: set CreatedAt/UpdatedAt.
 	now := NowFunc()
 
 	for i := start; i < end; i++ {
@@ -204,7 +188,7 @@ func createBatch(txn *DB, rv reflect.Value, start, end int) (int64, error) {
 			elemScope.CallMethod("BeforeCreate")
 		}
 		if elemScope.HasError() {
-			return rowsAffected, elemScope.db.Error
+			return 0, elemScope.db.Error
 		}
 
 		// Set timestamps.
@@ -233,7 +217,6 @@ func createBatch(txn *DB, rv reflect.Value, start, end int) (int64, error) {
 			}
 		}
 		allPlaceholders = append(allPlaceholders, "("+strings.Join(rowPlaceholders, ",")+")")
-		_ = rowPlaceholders
 	}
 
 	// Build and execute the multi-row INSERT.
@@ -247,9 +230,9 @@ func createBatch(txn *DB, rv reflect.Value, start, end int) (int64, error) {
 
 	result, err := scope.SQLDB().Exec(scope.SQL, scope.SQLVars...)
 	if err != nil {
-		return rowsAffected, err
+		return 0, err
 	}
-	rowsAffected, _ = result.RowsAffected()
+	rowsAffected, _ := result.RowsAffected()
 
 	// Set auto-increment primary key for each element (best effort — only
 	// works reliably for SQLite/MySQL with LastInsertId). For batch inserts,
@@ -287,15 +270,12 @@ func createBatch(txn *DB, rv reflect.Value, start, end int) (int64, error) {
 		if isPtrElem {
 			elemVal = elem.Interface()
 		} else {
-			elemVal = elem.Addr().Interface() // won't work if not addressable; fallback below
+			elemVal = elem.Addr().Interface()
 		}
-		// If not addressable, create a new pointer.
 		if !isPtrElem && !rv.Index(i).CanAddr() {
-			// Copy to addressable.
 			tmp := reflect.New(rv.Type().Elem())
 			tmp.Elem().Set(rv.Index(i))
 			elemVal = tmp.Interface()
-			// Copy back.
 			rv.Index(i).Set(tmp.Elem())
 		}
 		hookScope := txn.NewScope(elemVal)
