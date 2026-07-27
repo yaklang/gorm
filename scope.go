@@ -14,17 +14,19 @@ import (
 
 // Scope contain current operation's information when you perform any operation on the database
 type Scope struct {
-	Search          *search
-	Value           interface{}
-	SQL             string
-	SQLVars         []interface{}
-	db              *DB
-	instanceID      string
-	primaryKeyField *Field
-	skipLeft        bool
-	fields          *[]*Field
-	fieldStorage    []Field
-	selectAttrs     *[]string
+	Search           *search
+	Value            interface{}
+	SQL              string
+	SQLVars          []interface{}
+	db               *DB
+	instanceID       string
+	primaryKeyField  *Field
+	skipLeft         bool
+	skipBindVarKnown bool
+	skipBindVar      bool
+	fields           *[]*Field
+	fieldStorage     []Field
+	selectAttrs      *[]string
 }
 
 // IndirectValue return scope's reflect value's indirect value
@@ -263,7 +265,12 @@ func (scope *Scope) CallMethod(methodName string) {
 
 // AddToVars add value as sql's vars, used to prevent SQL injection
 func (scope *Scope) AddToVars(value interface{}) string {
-	_, skipBindVar := scope.InstanceGet("skip_bindvar")
+	skipBindVar := scope.skipBindVar
+	if !scope.skipBindVarKnown {
+		_, skipBindVar = scope.InstanceGet("skip_bindvar")
+		scope.skipBindVar = skipBindVar
+		scope.skipBindVarKnown = true
+	}
 
 	if expr, ok := value.(*SqlExpr); ok {
 		exp := expr.expr
@@ -399,6 +406,10 @@ func (scope *Scope) InstanceID() string {
 
 // InstanceSet set instance setting for current operation, but not for operations in callbacks, like saving associations callback
 func (scope *Scope) InstanceSet(name string, value interface{}) *Scope {
+	if name == "skip_bindvar" {
+		scope.skipBindVar = true
+		scope.skipBindVarKnown = true
+	}
 	return scope.Set(name+scope.InstanceID(), value)
 }
 

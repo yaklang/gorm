@@ -53,11 +53,13 @@ func createCallback(scope *Scope) {
 		defer scope.trace(NowFunc())
 
 		var (
-			columns, placeholders        []string
+			fields                       = scope.Fields()
+			columns                      = make([]string, 0, len(fields))
+			placeholders                 = make([]string, 0, len(fields))
 			blankColumnsWithDefaultValue []string
 		)
 
-		for _, field := range scope.Fields() {
+		for _, field := range fields {
 			if scope.changeableField(field) {
 				if field.IsNormal && !field.IsIgnored {
 					if field.IsBlank && field.HasDefaultValue {
