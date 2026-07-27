@@ -37,7 +37,7 @@ func (commonDialect) BindVar(i int) string {
 }
 
 func (commonDialect) Quote(key string) string {
-	return fmt.Sprintf(`"%s"`, key)
+	return `"` + key + `"`
 }
 
 func (s *commonDialect) fieldCanAutoIncrement(field *StructField) bool {
