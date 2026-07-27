@@ -69,6 +69,7 @@ func queryCallback(scope *Scope) {
 			defer rows.Close()
 
 			columns, _ := rows.Columns()
+			var scanPlan []int
 			for rows.Next() {
 				scope.db.RowsAffected++
 
@@ -77,7 +78,11 @@ func queryCallback(scope *Scope) {
 					elem = reflect.New(resultType).Elem()
 				}
 
-				scope.scan(rows, columns, scope.New(elem.Addr().Interface()).Fields())
+				fields := scope.New(elem.Addr().Interface()).Fields()
+				if scanPlan == nil {
+					scanPlan = buildScanPlan(columns, fields)
+				}
+				scope.scanWithPlan(rows, fields, scanPlan)
 
 				if isSlice {
 					if isPtr {

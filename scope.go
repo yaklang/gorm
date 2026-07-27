@@ -492,19 +492,15 @@ func (scope *Scope) quoteIfPossible(str string) string {
 	return str
 }
 
-func (scope *Scope) scan(rows *sql.Rows, columns []string, fields []*Field) {
-	var (
-		ignored            interface{}
-		values             = make([]interface{}, len(columns))
-		selectFields       []*Field
-		selectedColumnsMap = map[string]int{}
-		resetFields        = map[int]*Field{}
-	)
+func buildScanPlan(columns []string, fields []*Field) []int {
+	plan := make([]int, len(columns))
+	for index := range plan {
+		plan[index] = -1
+	}
 
+	selectedColumnsMap := map[string]int{}
 	for index, column := range columns {
-		values[index] = &ignored
-
-		selectFields = fields
+		selectFields := fields
 		offset := 0
 		if idx, ok := selectedColumnsMap[column]; ok {
 			offset = idx + 1
@@ -513,27 +509,52 @@ func (scope *Scope) scan(rows *sql.Rows, columns []string, fields []*Field) {
 
 		for fieldIndex, field := range selectFields {
 			if field.DBName == column {
-				if field.Field.Kind() == reflect.Ptr {
-					values[index] = field.Field.Addr().Interface()
-				} else {
-					reflectValue := reflect.New(reflect.PtrTo(field.Struct.Type))
-					reflectValue.Elem().Set(field.Field.Addr())
-					values[index] = reflectValue.Interface()
-					resetFields[index] = field
-				}
-
-				selectedColumnsMap[column] = offset + fieldIndex
-
+				selectedFieldIndex := offset + fieldIndex
+				plan[index] = selectedFieldIndex
+				selectedColumnsMap[column] = selectedFieldIndex
 				if field.IsNormal {
 					break
 				}
 			}
 		}
 	}
+	return plan
+}
+
+func (scope *Scope) scan(rows *sql.Rows, columns []string, fields []*Field) {
+	scope.scanWithPlan(rows, fields, buildScanPlan(columns, fields))
+}
+
+func (scope *Scope) scanWithPlan(rows *sql.Rows, fields []*Field, plan []int) {
+	var (
+		ignored     interface{}
+		values      = make([]interface{}, len(plan))
+		resetFields = make([]*Field, len(plan))
+	)
+
+	for index, fieldIndex := range plan {
+		values[index] = &ignored
+		if fieldIndex < 0 || fieldIndex >= len(fields) {
+			continue
+		}
+
+		field := fields[fieldIndex]
+		if field.Field.Kind() == reflect.Ptr {
+			values[index] = field.Field.Addr().Interface()
+		} else {
+			reflectValue := reflect.New(reflect.PtrTo(field.Struct.Type))
+			reflectValue.Elem().Set(field.Field.Addr())
+			values[index] = reflectValue.Interface()
+			resetFields[index] = field
+		}
+	}
 
 	scope.Err(rows.Scan(values...))
 
 	for index, field := range resetFields {
+		if field == nil {
+			continue
+		}
 		if v := reflect.ValueOf(values[index]).Elem().Elem(); v.IsValid() {
 			field.Field.Set(v)
 		}

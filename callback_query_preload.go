@@ -330,6 +330,7 @@ func (scope *Scope) handleManyToManyPreload(field *Field, conditions []interface
 	defer rows.Close()
 
 	columns, _ := rows.Columns()
+	var scanPlan []int
 	for rows.Next() {
 		var (
 			elem   = reflect.New(fieldType).Elem()
@@ -342,7 +343,11 @@ func (scope *Scope) handleManyToManyPreload(field *Field, conditions []interface
 			joinTableFields = append(joinTableFields, &Field{StructField: &StructField{DBName: sourceKey, IsNormal: true}, Field: reflect.New(foreignKeyType).Elem()})
 		}
 
-		scope.scan(rows, columns, append(fields, joinTableFields...))
+		scanFields := append(fields, joinTableFields...)
+		if scanPlan == nil {
+			scanPlan = buildScanPlan(columns, scanFields)
+		}
+		scope.scanWithPlan(rows, scanFields, scanPlan)
 
 		scope.New(elem.Addr().Interface()).
 			InstanceSet("gorm:skip_query_callback", true).
