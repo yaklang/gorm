@@ -23,6 +23,7 @@ type Scope struct {
 	primaryKeyField *Field
 	skipLeft        bool
 	fields          *[]*Field
+	fieldStorage    []Field
 	selectAttrs     *[]string
 }
 
@@ -111,7 +112,13 @@ func (scope *Scope) Fields() []*Field {
 			isStruct           = indirectScopeValue.Kind() == reflect.Struct
 		)
 
-		for _, structField := range scope.GetModelStruct().StructFields {
+		structFields := scope.GetModelStruct().StructFields
+		if len(structFields) > 0 {
+			scope.fieldStorage = make([]Field, len(structFields))
+			fields = make([]*Field, len(structFields))
+		}
+		for index, structField := range structFields {
+			field := &scope.fieldStorage[index]
 			if isStruct {
 				fieldValue := indirectScopeValue
 				for _, name := range structField.Names {
@@ -120,10 +127,11 @@ func (scope *Scope) Fields() []*Field {
 					}
 					fieldValue = reflect.Indirect(fieldValue).FieldByName(name)
 				}
-				fields = append(fields, &Field{StructField: structField, Field: fieldValue, IsBlank: isBlank(fieldValue)})
+				*field = Field{StructField: structField, Field: fieldValue, IsBlank: isBlank(fieldValue)}
 			} else {
-				fields = append(fields, &Field{StructField: structField, IsBlank: true})
+				*field = Field{StructField: structField, IsBlank: true}
 			}
+			fields[index] = field
 		}
 		scope.fields = &fields
 	}
