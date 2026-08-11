@@ -168,7 +168,22 @@ func prepareBatchCreateRow(txn *DB, elem reflect.Value, now time.Time, expectedC
 		value = elem.Addr().Interface()
 	}
 
-	scope := txn.NewScope(value)
+	// Use a lightweight scope that reuses the transaction DB instead of
+	// txn.NewScope(value), which clones the entire DB (dialect recreation
+	// plus a sync.Map Range/Store) for every element. For large batch
+	// inserts this eliminates millions of DB clones / search clones /
+	// dialect allocations (several GB of alloc_space in pprof).
+	//
+	// Safety: the search is empty for INSERT (no WHERE/ORDER/LIMIT/SELECT),
+	// so SelectAttrs()/OmitAttrs()/TableName() all behave as defaults.
+	// Hooks use scope.db (the transaction), not a cloned DB. Each element
+	// still gets its own scope and field storage, and hooks operate on the
+	// element's own value, preserving per-element isolation.
+	scope := &Scope{
+		db:     txn,
+		Value:  value,
+		Search: &search{},
+	}
 	if !scope.HasError() {
 		scope.CallMethod("BeforeSave")
 	}
