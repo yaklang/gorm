@@ -234,6 +234,24 @@ func TestUpdateInBatches_SpansChunks(t *testing.T) {
 	}
 }
 
+func TestSQLiteHasIndexMatchesQuotedName(t *testing.T) {
+	sqlDB := setupBatchDB(t)
+	defer sqlDB.Close()
+	gormDB, err := Open("sqlite3", sqlDB)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r := gormDB.Exec(`CREATE UNIQUE INDEX "ux_batch_users_name" ON "batch_users" ("name")`); r.Error != nil {
+		t.Fatal(r.Error)
+	}
+	if !gormDB.Dialect().HasIndex("batch_users", "ux_batch_users_name") {
+		t.Fatal("quoted UNIQUE index must be visible to HasIndex")
+	}
+	if gormDB.Dialect().HasIndex("batch_users", "missing") {
+		t.Fatal("HasIndex reported an index that does not exist")
+	}
+}
+
 func TestUpdateInBatches_RequiresConflictColumns(t *testing.T) {
 	sqlDB := setupBatchDB(t)
 	defer sqlDB.Close()

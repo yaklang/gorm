@@ -72,7 +72,10 @@ func (s *sqlite3) DataTypeOf(field *StructField) string {
 
 func (s sqlite3) HasIndex(tableName string, indexName string) bool {
 	var count int
-	s.db.QueryRow(fmt.Sprintf("SELECT count(*) FROM sqlite_master WHERE tbl_name = ? AND sql LIKE '%%INDEX %v ON%%'", indexName), tableName).Scan(&count)
+	// Match the index name, not a fragment of its CREATE statement. Quoted
+	// names (CREATE UNIQUE INDEX "ux" ON ...) never contain the unquoted
+	// "INDEX ux ON" text the old LIKE looked for.
+	s.db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type = 'index' AND tbl_name = ? AND name = ?`, tableName, indexName).Scan(&count)
 	return count > 0
 }
 
