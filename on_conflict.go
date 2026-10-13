@@ -1,6 +1,7 @@
 package gorm
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -102,6 +103,105 @@ func (s *DB) OnConflictUpdateAll(columns string) *DB {
 		UpdateColumns: updateCols,
 	}
 	return s.InstantSet("gorm:insert_option", clause.String())
+}
+
+// UpdateInBatches writes a slice as INSERT statements that turn a conflict on
+// conflictColumns into an in-place UPDATE of every non-primary field. SQLite
+// and Postgres get INSERT ... ON CONFLICT(conflictColumns) DO UPDATE SET, MySQL
+// gets INSERT ... ON DUPLICATE KEY UPDATE. Rows whose conflict columns do not
+// exist yet are inserted normally, so one call inserts and updates.
+//
+// The conflict target must already be backed by a UNIQUE index; without one the
+// statement fails. Unlike a delete-then-insert upsert it never removes a row
+// first, so a rejected statement leaves the previous snapshot in place and row
+// ids (plus their secondary-index entries) are stable across updates.
+//
+//	db.UpdateInBatches(codes, 500, "program_name,code_id")
+func (s *DB) UpdateInBatches(value interface{}, batchSize int, conflictColumns string) *DB {
+	if conflictColumns == "" {
+		return batchErrorDB(s.clone(), errors.New("gorm: UpdateInBatches requires conflict columns; use CreateInBatches for plain inserts"))
+	}
+	sample := batchUpsertSample(value)
+	if sample == nil {
+		return s.CreateInBatches(value, batchSize)
+	}
+	dialect := ""
+	if d := s.Dialect(); d != nil {
+		dialect = d.GetName()
+	}
+	option, err := batchUpsertInsertOption(s.New().NewScope(sample), dialect, conflictColumns)
+	if err != nil {
+		return batchErrorDB(s.clone(), err)
+	}
+	return s.InstantSet("gorm:insert_option", option).CreateInBatches(value, batchSize)
+}
+
+// batchErrorDB attaches err to db and returns the same handle so callers can
+// keep the fluent *DB shape.
+func batchErrorDB(db *DB, err error) *DB {
+	db.AddError(err)
+	return db
+}
+
+// batchInsertOptionFromModel returns the family of INSERT clauses that this
+// dialect accepts, plus the list of updatable columns for the sample model.
+func batchUpsertInsertOption(scope *Scope, dialect, conflictColumns string) (string, error) {
+	columns := make([]string, 0, 48)
+	for _, field := range scope.Fields() {
+		if field.IsNormal && !field.IsIgnored && !field.IsPrimaryKey {
+			columns = append(columns, field.DBName)
+		}
+	}
+	if len(columns) == 0 {
+		return "", fmt.Errorf("gorm: UpdateInBatches found no updatable columns on %T", scope.Value)
+	}
+
+	switch dialect {
+	case "mysql":
+		assignments := make([]string, 0, len(columns))
+		for _, column := range columns {
+			quoted := scope.Quote(column)
+			assignments = append(assignments, fmt.Sprintf("%s=VALUES(%s)", quoted, quoted))
+		}
+		return "ON DUPLICATE KEY UPDATE " + strings.Join(assignments, ","), nil
+	default:
+		assignments := make([]string, 0, len(columns))
+		for _, column := range columns {
+			quoted := scope.Quote(column)
+			assignments = append(assignments, fmt.Sprintf("%s=excluded.%s", quoted, quoted))
+		}
+		return fmt.Sprintf("ON CONFLICT(%s) DO UPDATE SET %s", conflictColumns, strings.Join(assignments, ",")), nil
+	}
+}
+
+// batchUpsertSample returns an addressable value for the slice's model. The
+// returned interface is used only for schema introspection, so nil elements are
+// skipped instead of failing the whole batch.
+func batchUpsertSample(value interface{}) interface{} {
+	rv := reflect.ValueOf(value)
+	for rv.Kind() == reflect.Ptr {
+		if rv.IsNil() {
+			return nil
+		}
+		rv = rv.Elem()
+	}
+	if rv.Kind() != reflect.Slice && rv.Kind() != reflect.Array {
+		return nil
+	}
+	for index := 0; index < rv.Len(); index++ {
+		elem := rv.Index(index)
+		if elem.Kind() == reflect.Ptr {
+			if elem.IsNil() {
+				continue
+			}
+			return elem.Interface()
+		}
+		if elem.CanAddr() {
+			return elem.Addr().Interface()
+		}
+		return elem.Interface()
+	}
+	return nil
 }
 
 // CreateInBatchesOnConflict is like CreateInBatches but with an ON CONFLICT clause

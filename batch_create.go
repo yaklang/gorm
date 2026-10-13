@@ -362,7 +362,7 @@ func assignBatchPrimaryKeys(dialect string, rows []*batchCreateRow, rowsAffected
 		return nil
 	}
 	switch dialect {
-	case "sqlite3":
+	case "sqlite3", "sqlite3_extended":
 		firstID -= rowsAffected - 1
 	case "mysql":
 		// MySQL reports the first generated ID for a multi-row INSERT.
@@ -395,7 +395,7 @@ func maxCreateBatchRows(dialect string, columnCount, requested int) int {
 
 	maxBindVars := 0
 	switch dialect {
-	case "sqlite3":
+	case "sqlite3", "sqlite3_extended":
 		maxBindVars = sqliteMaxBatchBindVars
 	case "mysql":
 		maxBindVars = mysqlMaxBatchBindVars
