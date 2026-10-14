@@ -1,6 +1,7 @@
 package gorm
 
 import (
+	"errors"
 	"fmt"
 	"reflect"
 	"strings"
@@ -45,6 +46,18 @@ func (s *DB) CreateInBatches(value interface{}, batchSize ...int) *DB {
 	if len(batchSize) > 0 && batchSize[0] > 0 {
 		size = batchSize[0]
 	}
+	return s.createInBatches(value, size, nil)
+}
+
+// createInBatches is the engine behind CreateInBatches and SaveInBatches. save
+// is nil for a plain insert; SaveInBatches passes the upsert it wants, so the
+// behavior travels as an argument instead of as state left on the DB handle.
+func (s *DB) createInBatches(value interface{}, size int, save *batchSave) *DB {
+	if save != nil {
+		if _, ok := s.Get("gorm:insert_option"); ok {
+			return batchErrorDB(s.clone(), errors.New("gorm: SaveInBatches builds its own conflict clause and cannot be combined with gorm:insert_option"))
+		}
+	}
 
 	// Resolve the slice.
 	rv := reflect.ValueOf(value)
@@ -52,6 +65,9 @@ func (s *DB) CreateInBatches(value interface{}, batchSize ...int) *DB {
 		rv = rv.Elem()
 	}
 	if rv.Kind() != reflect.Slice && rv.Kind() != reflect.Array {
+		if save != nil {
+			return batchErrorDB(s.clone(), fmt.Errorf("gorm: SaveInBatches requires a slice or array, got %T", value))
+		}
 		// Not a slice — fall back to single Create.
 		return s.Create(value)
 	}
@@ -95,7 +111,7 @@ func (s *DB) CreateInBatches(value interface{}, batchSize ...int) *DB {
 			end = n
 		}
 
-		rowsAffected, err := createBatch(txn, rv, start, end)
+		rowsAffected, err := createBatch(txn, rv, start, end, save)
 		if err != nil {
 			txn.AddError(err)
 			if ownTxn {
@@ -116,12 +132,18 @@ func (s *DB) CreateInBatches(value interface{}, batchSize ...int) *DB {
 // createBatch prepares rows once, then splits them by column shape and the
 // target database's bind-variable limit. Rows with different default/primary
 // key shapes cannot share one VALUES clause without changing Create semantics.
-func createBatch(txn *DB, rv reflect.Value, start, end int) (int64, error) {
+func createBatch(txn *DB, rv reflect.Value, start, end int, save *batchSave) (int64, error) {
 	rows := make([]*batchCreateRow, 0, end-start)
 	now := txn.nowFunc()
 	var expectedColumns []string
 	for i := start; i < end; i++ {
-		row, err := prepareBatchCreateRow(txn, rv.Index(i), now, expectedColumns)
+		elem := rv.Index(i)
+		// A plain create rejects a nil element as a caller bug; a save skips it,
+		// so a sparse slice can be handed over as is.
+		if save != nil && isNilBatchElem(elem) {
+			continue
+		}
+		row, err := prepareBatchCreateRow(txn, elem, now, expectedColumns, save)
 		if err != nil {
 			return 0, err
 		}
@@ -137,7 +159,7 @@ func createBatch(txn *DB, rv reflect.Value, start, end int) (int64, error) {
 			groupEnd++
 		}
 
-		rowsAffected, err := executeBatchCreateRows(txn, rows[groupStart:groupEnd])
+		rowsAffected, err := executeBatchCreateRows(txn, rows[groupStart:groupEnd], save)
 		if err != nil {
 			return totalRowsAffected, err
 		}
@@ -147,7 +169,22 @@ func createBatch(txn *DB, rv reflect.Value, start, end int) (int64, error) {
 	return totalRowsAffected, nil
 }
 
-func prepareBatchCreateRow(txn *DB, elem reflect.Value, now time.Time, expectedColumns []string) (*batchCreateRow, error) {
+// isNilBatchElem reports whether a slice element is a nil pointer or interface.
+func isNilBatchElem(elem reflect.Value) bool {
+	for elem.Kind() == reflect.Interface {
+		if elem.IsNil() {
+			return true
+		}
+		elem = elem.Elem()
+	}
+	return elem.Kind() == reflect.Ptr && elem.IsNil()
+}
+
+// prepareBatchCreateRow collects one element's column values. A save stamps
+// UpdatedAt on every row (gorm v2's Save does the same) so an update is visible
+// even when the struct was loaded from the database; a plain create only fills
+// a blank one.
+func prepareBatchCreateRow(txn *DB, elem reflect.Value, now time.Time, expectedColumns []string, save *batchSave) (*batchCreateRow, error) {
 	for elem.Kind() == reflect.Interface {
 		if elem.IsNil() {
 			return nil, fmt.Errorf("gorm: nil interface in CreateInBatches")
@@ -199,7 +236,7 @@ func prepareBatchCreateRow(txn *DB, elem reflect.Value, now time.Time, expectedC
 			return nil, err
 		}
 	}
-	if field, ok := scope.FieldByName("UpdatedAt"); ok && field.IsBlank {
+	if field, ok := scope.FieldByName("UpdatedAt"); ok && (save != nil || field.IsBlank) {
 		if err := field.Set(now); err != nil {
 			return nil, err
 		}
@@ -240,6 +277,11 @@ func prepareBatchCreateRow(txn *DB, elem reflect.Value, now time.Time, expectedC
 			if field.IsBlank && field.HasDefaultValue {
 				continue
 			}
+			// A save keyed on a natural key never writes the primary key: the
+			// database assigns it on insert and keeps it on update.
+			if save != nil && field.IsPrimaryKey && !save.keepsPrimaryKey(field) {
+				continue
+			}
 			if !field.IsPrimaryKey || !field.IsBlank {
 				appendColumn(scope.Quote(field.DBName), field.Field.Interface())
 			}
@@ -263,7 +305,7 @@ func prepareBatchCreateRow(txn *DB, elem reflect.Value, now time.Time, expectedC
 	return row, nil
 }
 
-func executeBatchCreateRows(txn *DB, rows []*batchCreateRow) (int64, error) {
+func executeBatchCreateRows(txn *DB, rows []*batchCreateRow, save *batchSave) (int64, error) {
 	if len(rows) == 0 {
 		return 0, nil
 	}
@@ -274,6 +316,16 @@ func executeBatchCreateRows(txn *DB, rows []*batchCreateRow) (int64, error) {
 	var extraOption string
 	if value, ok := scope.Get("gorm:insert_option"); ok {
 		extraOption = fmt.Sprint(value)
+	}
+	if save != nil && len(columns) > 0 {
+		// Built from the columns this statement really inserts, so rows of
+		// different shapes (explicit id or not, defaulted columns left out)
+		// each get a SET list that matches their INSERT.
+		option, err := save.insertOption(scope, columns)
+		if err != nil {
+			return 0, err
+		}
+		extraOption = option
 	}
 	var insertModifier string
 	if value, ok := scope.Get("gorm:insert_modifier"); ok {
@@ -331,8 +383,13 @@ func executeBatchCreateRows(txn *DB, rows []*batchCreateRow) (int64, error) {
 		rowsAffected = 0
 	}
 
-	if err := assignBatchPrimaryKeys(scope.Dialect().GetName(), rows, rowsAffected, result.LastInsertId); err != nil {
-		return rowsAffected, err
+	// An upsert cannot tell which rows were inserted and which were updated, so
+	// last-insert-id arithmetic would write wrong primary keys into the caller's
+	// structs. A save leaves them alone.
+	if save == nil {
+		if err := assignBatchPrimaryKeys(scope.Dialect().GetName(), rows, rowsAffected, result.LastInsertId); err != nil {
+			return rowsAffected, err
+		}
 	}
 	for _, row := range rows {
 		if !row.scope.HasError() {
@@ -362,7 +419,7 @@ func assignBatchPrimaryKeys(dialect string, rows []*batchCreateRow, rowsAffected
 		return nil
 	}
 	switch dialect {
-	case "sqlite3", "sqlite3_extended":
+	case "sqlite3":
 		firstID -= rowsAffected - 1
 	case "mysql":
 		// MySQL reports the first generated ID for a multi-row INSERT.
@@ -395,7 +452,7 @@ func maxCreateBatchRows(dialect string, columnCount, requested int) int {
 
 	maxBindVars := 0
 	switch dialect {
-	case "sqlite3", "sqlite3_extended":
+	case "sqlite3":
 		maxBindVars = sqliteMaxBatchBindVars
 	case "mysql":
 		maxBindVars = mysqlMaxBatchBindVars
