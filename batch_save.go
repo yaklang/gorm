@@ -28,7 +28,7 @@ import (
 //     row keeps its id.
 //   - Primary keys are not written back into the structs, because after an
 //     upsert the database cannot say which rows were inserted.
-//   - nil elements are skipped (CreateInBatches rejects them).
+//   - nil elements are skipped, the same as CreateInBatches.
 //
 // The call runs in one transaction, or in the current one, so a failed
 // statement leaves the previous rows as they were. batchSize <= 0 means
