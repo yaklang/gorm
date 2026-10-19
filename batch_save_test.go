@@ -212,9 +212,12 @@ func TestSaveInBatches_SkipsNilElements(t *testing.T) {
 		t.Fatalf("want 5 rows, got %d", n)
 	}
 
-	// Plain CreateInBatches keeps rejecting nil: that is a caller bug there.
-	if r := db.CreateInBatches([]*savedDoc{nil}, 10); r.Error == nil {
-		t.Fatal("CreateInBatches must keep rejecting nil elements")
+	// Plain CreateInBatches skips nil elements the same way.
+	if r := db.CreateInBatches([]*savedDoc{{Program: "p", CodeID: 6, Name: "f"}, nil}, 10); r.Error != nil {
+		t.Fatalf("CreateInBatches with a nil element: %v", r.Error)
+	}
+	if n := countDocs(t, db); n != 6 {
+		t.Fatalf("want 6 rows, got %d", n)
 	}
 }
 

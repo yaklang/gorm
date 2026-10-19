@@ -69,7 +69,7 @@ func TestCreateInBatches_MixedPrimaryKeyShapes(t *testing.T) {
 	}
 }
 
-func TestCreateInBatches_NilElementRollsBack(t *testing.T) {
+func TestCreateInBatches_SkipsNilElements(t *testing.T) {
 	sqlDB := setupBatchDB(t)
 	defer sqlDB.Close()
 	gormDB, err := Open("sqlite3", sqlDB)
@@ -77,16 +77,26 @@ func TestCreateInBatches_NilElementRollsBack(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	users := []*BatchUser{{Name: "must-not-persist"}, nil}
-	if result := gormDB.CreateInBatches(users, 10); result.Error == nil {
-		t.Fatal("CreateInBatches with a nil element unexpectedly succeeded")
+	users := []*BatchUser{nil, {Name: "kept"}, nil, {Name: "also"}}
+	if result := gormDB.CreateInBatches(users, 1); result.Error != nil {
+		t.Fatalf("CreateInBatches with nil elements: %v", result.Error)
+	}
+	var names []string
+	if err := gormDB.Model(&BatchUser{}).Order("id").Pluck("name", &names).Error; err != nil {
+		t.Fatalf("pluck names: %v", err)
+	}
+	if len(names) != 2 || names[0] != "kept" || names[1] != "also" {
+		t.Fatalf("names = %v, want [kept also]", names)
+	}
+	if result := gormDB.CreateInBatches([]*BatchUser{nil, nil}, 10); result.Error != nil {
+		t.Fatalf("CreateInBatches of only nil elements: %v", result.Error)
 	}
 	var count int
 	if err := gormDB.Model(&BatchUser{}).Count(&count).Error; err != nil {
 		t.Fatalf("count users: %v", err)
 	}
-	if count != 0 {
-		t.Fatalf("count = %d, want 0 after rollback", count)
+	if count != 2 {
+		t.Fatalf("count = %d, want 2 after skipping nils", count)
 	}
 }
 

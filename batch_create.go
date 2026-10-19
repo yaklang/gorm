@@ -37,7 +37,8 @@ type batchCreateRow struct {
 // BeforeSave/BeforeCreate/AfterCreate/AfterSave hooks are called for every
 // element individually, just like v1's Create.
 //
-// If batchSize <= 0, DefaultCreateBatchSize (500) is used.
+// If batchSize <= 0, DefaultCreateBatchSize (500) is used. Nil pointer and
+// interface elements are skipped, so a sparse slice can be passed as is.
 //
 //	db.CreateInBatches(&users)        // uses DefaultCreateBatchSize
 //	db.CreateInBatches(&users, 100)   // explicit batch size
@@ -138,9 +139,9 @@ func createBatch(txn *DB, rv reflect.Value, start, end int, save *batchSave) (in
 	var expectedColumns []string
 	for i := start; i < end; i++ {
 		elem := rv.Index(i)
-		// A plain create rejects a nil element as a caller bug; a save skips it,
-		// so a sparse slice can be handed over as is.
-		if save != nil && isNilBatchElem(elem) {
+		// Nil pointers and interfaces are not rows. Skip them for both insert and
+		// upsert so a sparse slice can be handed over as is.
+		if isNilBatchElem(elem) {
 			continue
 		}
 		row, err := prepareBatchCreateRow(txn, elem, now, expectedColumns, save)
