@@ -2,11 +2,12 @@ package gorm
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 )
 
-// SaveInBatches saves a slice with one multi-row INSERT per chunk and updates
-// the rows that already exist instead of failing on them. It is gorm v2's
+// SaveInBatches inserts a slice and updates the rows that already exist
+// instead of failing on them. It is gorm v2's
 // Save(slice), which is Create plus OnConflict{UpdateAll: true}, with the
 // conflict target spelled out.
 //
@@ -30,9 +31,12 @@ import (
 //     upsert the database cannot say which rows were inserted.
 //   - nil elements are skipped, the same as CreateInBatches.
 //
-// The call runs in one transaction, or in the current one, so a failed
-// statement leaves the previous rows as they were. batchSize <= 0 means
-// DefaultCreateBatchSize. SQLite, PostgreSQL and MySQL are supported.
+// The call owns one transaction or reuses the current one. An error rolls back
+// a transaction owned by this call; callers supplying a transaction retain
+// responsibility for its commit or rollback. batchSize <= 0 means
+// DefaultCreateBatchSize. SQLite, PostgreSQL and MySQL use native INSERT
+// suffixes. Additional dialects can implement BatchSaveDialect; their
+// BatchCreateDialect row limit also applies to saves.
 //
 // One chunk must not contain the same conflict key twice: SQLite applies the
 // rows in order so the later one wins, but PostgreSQL rejects the statement
@@ -104,20 +108,20 @@ func (b *batchSave) target(scope *Scope) ([]string, error) {
 	return names, nil
 }
 
-// insertOption returns the conflict clause for one INSERT. columns are the
-// quoted columns that statement inserts, so rows of different shapes (explicit
-// id or not, defaulted columns left out) each get a SET list that matches.
-func (b *batchSave) insertOption(scope *Scope, columns []string) (string, error) {
+// statementColumns resolves the target and the update list for the columns
+// this statement actually inserts. Quoted names are shared by suffix-based and
+// complete-statement dialects, including rows with different default shapes.
+func (b *batchSave) statementColumns(scope *Scope, columns []string) (quotedTarget, updates []string, err error) {
 	target, err := b.target(scope)
 	if err != nil {
-		return "", err
+		return nil, nil, err
 	}
 
 	// The update never rewrites the columns that identify the row, nor created_at.
 	// Leaving the target out also matters for speed: assigning an indexed column,
 	// even to its current value, makes the database rewrite those index entries.
 	fixed := make(map[string]bool, len(target)+2)
-	quotedTarget := make([]string, len(target))
+	quotedTarget = make([]string, len(target))
 	for i, name := range target {
 		quotedTarget[i] = scope.Quote(name)
 		fixed[quotedTarget[i]] = true
@@ -128,13 +132,52 @@ func (b *batchSave) insertOption(scope *Scope, columns []string) (string, error)
 	if field, ok := scope.FieldByName("CreatedAt"); ok {
 		fixed[scope.Quote(field.DBName)] = true
 	}
-	updates := make([]string, 0, len(columns))
+	updates = make([]string, 0, len(columns))
 	for _, column := range columns {
 		if !fixed[column] {
 			updates = append(updates, column)
 		}
 	}
 
+	return quotedTarget, updates, nil
+}
+
+// generatedPrimaryInsert reports a fresh row whose sole conflict target is an
+// omitted, auto-generated integer primary key. A complete-statement dialect
+// cannot match a key that does not exist yet; it must insert this row normally.
+func (b *batchSave) generatedPrimaryInsert(scope *Scope, columns []string) bool {
+	target, err := b.target(scope)
+	primary := scope.PrimaryFields()
+	if err != nil || len(target) != 1 || len(primary) != 1 || target[0] != primary[0].DBName || !primary[0].IsBlank {
+		return false
+	}
+	field := primary[0]
+	if auto, ok := field.TagSettingsGet("AUTO_INCREMENT"); ok && strings.EqualFold(auto, "false") {
+		return false
+	}
+	fieldType := field.Field.Type()
+	for fieldType.Kind() == reflect.Ptr {
+		fieldType = fieldType.Elem()
+	}
+	kind := fieldType.Kind()
+	if kind < reflect.Int || kind > reflect.Uint64 {
+		return false
+	}
+	quoted := scope.Quote(field.DBName)
+	for _, column := range columns {
+		if column == quoted {
+			return false
+		}
+	}
+	return true
+}
+
+// insertOption returns the native INSERT suffix for the built-in dialects.
+func (b *batchSave) insertOption(scope *Scope, columns []string) (string, error) {
+	quotedTarget, updates, err := b.statementColumns(scope, columns)
+	if err != nil {
+		return "", err
+	}
 	switch dialect := scope.Dialect().GetName(); dialect {
 	case "mysql":
 		assignments := make([]string, 0, len(updates))
