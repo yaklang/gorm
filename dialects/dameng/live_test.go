@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -22,9 +23,27 @@ type dmFixtureRecord struct {
 	Number  int
 	Enabled bool
 	Data    []byte
+	// This fixture-only hook consumes an identity between two batch rows.
+	ConsumeIdentity bool `gorm:"-"`
 }
 
 func (*dmFixtureRecord) TableName() string { return "gorm_dm_fixture_records" }
+
+var dmFixtureCountCreates atomic.Bool
+var dmFixtureCreatedRows atomic.Int64
+
+func (r *dmFixtureRecord) AfterCreate(scope *gorm.Scope) error {
+	if dmFixtureCountCreates.Load() {
+		dmFixtureCreatedRows.Add(1)
+	}
+	if r.ConsumeIdentity {
+		// Use the batch's physical transaction, without recursively invoking a
+		// GORM hook. The next row must read its own ID rather than infer +1.
+		_, err := scope.SQLDB().Exec(`INSERT INTO "gorm_dm_fixture_records" ("tenant","natural","number","enabled") VALUES (?,?,0,0)`, r.Tenant, r.Natural+"-gap")
+		return err
+	}
+	return nil
+}
 
 type dmFixtureCase struct {
 	ID   uint
@@ -179,7 +198,7 @@ func TestDMLiveGenericOperations(t *testing.T) {
 	t.Run("BatchCreateIdentityCLOBBlobAndBoolean", func(t *testing.T) {
 		body := strings.Repeat("中文长文本🙂", 6000)
 		data := []byte{0, 1, 127, 128, 255}
-		rows := []*dmFixtureRecord{{Tenant: "create", Natural: "one", Body: body, Enabled: true, Data: data}, nil, {Tenant: "create", Natural: "two", Enabled: false}}
+		rows := []*dmFixtureRecord{{Tenant: "create", Natural: "one", Body: body, Enabled: true, Data: data, ConsumeIdentity: true}, nil, {Tenant: "create", Natural: "two", Enabled: false}}
 		if err := db.CreateInBatches(rows, 2).Error; err != nil {
 			t.Fatal(err)
 		}
@@ -187,11 +206,16 @@ func TestDMLiveGenericOperations(t *testing.T) {
 			t.Fatal("generated identity readback failed")
 		}
 		got := load(t, "create", "one")
-		if got.Body != body || !got.Enabled || !bytes.Equal(got.Data, data) {
+		if got.ID != rows[0].ID || got.Body != body || !got.Enabled || !bytes.Equal(got.Data, data) {
 			t.Fatal("CLOB/blob/boolean readback mismatch")
 		}
-		if load(t, "create", "two").Enabled {
-			t.Fatal("false boolean changed")
+		second := load(t, "create", "two")
+		if second.ID != rows[2].ID || second.Enabled {
+			t.Fatal("second row identity or false boolean changed")
+		}
+		gap := load(t, "create", "one-gap")
+		if gap.ID <= got.ID || second.ID <= gap.ID || second.ID == got.ID+1 {
+			t.Fatalf("fixture did not establish an identity gap: first=%d gap=%d second=%d", got.ID, gap.ID, second.ID)
 		}
 	})
 	t.Run("MergePreservesIdentityCreationAndZeroValues", func(t *testing.T) {
@@ -200,7 +224,7 @@ func TestDMLiveGenericOperations(t *testing.T) {
 			t.Fatal(err)
 		}
 		before := load(t, "merge", "one")
-		update := dmFixtureRecord{Model: gorm.Model{ID: row.ID + 100000}, Tenant: "merge", Natural: "one", Body: strings.Repeat("更新中文", 3000)}
+		update := dmFixtureRecord{Model: gorm.Model{ID: row.ID + 100000, CreatedAt: before.CreatedAt.Add(-24 * time.Hour)}, Tenant: "merge", Natural: "one", Body: strings.Repeat("更新中文", 3000)}
 		if err := db.SaveInBatches([]*dmFixtureRecord{&update, nil, {Tenant: "merge", Natural: "two", Number: 1}}, 1, "tenant", "natural").Error; err != nil {
 			t.Fatal(err)
 		}
@@ -234,17 +258,27 @@ func TestDMLiveGenericOperations(t *testing.T) {
 			t.Fatal(err)
 		}
 		before := load(t, "rollback", "existing")
+		dmFixtureCountCreates.Store(true)
+		defer dmFixtureCountCreates.Store(false)
+		dmFixtureCreatedRows.Store(0)
 		bad := []*dmFixtureRecord{{Tenant: "rollback", Natural: "existing", Number: 9}, {Tenant: "rollback", Natural: "new", Number: 1}, {Tenant: "rollback", Natural: "failure", Number: -1}}
-		if err := db.SaveInBatches(bad, 2, "tenant", "natural").Error; err == nil {
-			t.Fatal("check violation did not fail")
+		if err := db.SaveInBatches(bad, 2, "tenant", "natural").Error; err == nil || !strings.Contains(strings.ToLower(err.Error()), "ck_dm_fixture_number") {
+			t.Fatalf("expected the injected check constraint violation, got: %v", err)
+		}
+		if completed := dmFixtureCreatedRows.Load(); completed != 2 {
+			t.Fatalf("expected two successful MERGE statements before the injected failure, got %d", completed)
 		}
 		after := load(t, "rollback", "existing")
 		if after.ID != before.ID || after.Number != 5 || count(t, "rollback") != 1 {
 			t.Fatal("failed later chunk committed earlier writes")
 		}
 		creates := []*dmFixtureRecord{{Tenant: "create-rollback", Natural: "one"}, {Tenant: "create-rollback", Natural: "two"}, {Tenant: "create-rollback", Natural: "one"}}
-		if err := db.CreateInBatches(creates, 2).Error; err == nil {
-			t.Fatal("duplicate create did not fail")
+		dmFixtureCreatedRows.Store(0)
+		if err := db.CreateInBatches(creates, 2).Error; err == nil || (!strings.Contains(err.Error(), "-6602") && !strings.Contains(strings.ToLower(err.Error()), "ux_dm_fixture_record")) {
+			t.Fatalf("expected the injected unique constraint violation, got: %v", err)
+		}
+		if completed := dmFixtureCreatedRows.Load(); completed != 2 {
+			t.Fatalf("expected two successful INSERT statements before the injected failure, got %d", completed)
 		}
 		if count(t, "create-rollback") != 0 {
 			t.Fatal("failed batch create committed earlier rows")
@@ -264,6 +298,25 @@ func TestDMLiveGenericOperations(t *testing.T) {
 		}
 		if count(t, "caller") != 0 {
 			t.Fatal("batch committed its caller-owned transaction")
+		}
+
+		commitTx := db.Begin()
+		if commitTx.Error != nil {
+			t.Fatal(commitTx.Error)
+		}
+		defer commitTx.Rollback()
+		if err := commitTx.SaveInBatches([]*dmFixtureRecord{{Tenant: "caller-commit", Natural: "one", Number: 1}}, 1, "tenant", "natural").Error; err != nil {
+			t.Fatal(err)
+		}
+		// A following write also proves the batch left this transaction open.
+		if err := commitTx.Create(&dmFixtureRecord{Tenant: "caller-commit", Natural: "two", Number: 2}).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := commitTx.Commit().Error; err != nil {
+			t.Fatal(err)
+		}
+		if count(t, "caller-commit") != 2 || load(t, "caller-commit", "one").Number != 1 || load(t, "caller-commit", "two").Number != 2 {
+			t.Fatal("caller commit did not persist both the batch and its following write")
 		}
 	})
 	t.Run("PrimaryTargetAndNoUpdateColumns", func(t *testing.T) {
