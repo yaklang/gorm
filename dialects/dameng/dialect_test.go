@@ -43,6 +43,45 @@ func TestIdentifierCaseAndTypeMetadata(t *testing.T) {
 	}
 }
 
+func TestBooleanDefaultsKeepModelMetadataUnchanged(t *testing.T) {
+	type row struct {
+		True       bool   `gorm:"not null;default:true"`
+		False      bool   `gorm:"default:false"`
+		Alias      bool   `gorm:"type:BOOLEAN;default:TrUe;comment:'true remains a comment'"`
+		Pointer    *bool  `gorm:"default:false"`
+		Numeric    bool   `gorm:"default:1"`
+		Expression bool   `gorm:"default:(1)"`
+		OtherType  bool   `gorm:"type:INTEGER;default:true"`
+		Text       string `gorm:"default:'true'"`
+	}
+	want := map[string]string{
+		"true": "BIT NOT NULL  DEFAULT 1", "false": "BIT DEFAULT 0",
+		"alias": "BIT DEFAULT 1 COMMENT 'true remains a comment'", "pointer": "BIT DEFAULT 0",
+		"numeric": "BIT DEFAULT 1", "expression": "BIT DEFAULT (1)",
+		"other_type": "INTEGER DEFAULT true", "text": "VARCHAR(255) DEFAULT 'true'",
+	}
+	d := &dmDialect{}
+	postgres, ok := gorm.GetDialect("postgres")
+	if !ok {
+		t.Fatal("PostgreSQL dialect is not registered")
+	}
+	for _, field := range (&gorm.Scope{Value: &row{}}).GetModelStruct().StructFields {
+		t.Run(field.DBName, func(t *testing.T) {
+			original, hadDefault := field.TagSettingsGet("DEFAULT")
+			otherBackend := postgres.DataTypeOf(field)
+			if got := d.DataTypeOf(field); got != want[field.DBName] {
+				t.Fatalf("DM type: got %q want %q", got, want[field.DBName])
+			}
+			if current, hasDefault := field.TagSettingsGet("DEFAULT"); current != original || hasDefault != hadDefault {
+				t.Fatalf("DM changed cached default tag from %q to %q", original, current)
+			}
+			if got := postgres.DataTypeOf(field); got != otherBackend {
+				t.Fatalf("DM changed PostgreSQL mapping: %q -> %q", otherBackend, got)
+			}
+		})
+	}
+}
+
 func TestMetadataAndModifyColumnRetainQuotedNames(t *testing.T) {
 	defer testdb.Reset()
 	db, err := sql.Open("testdb", "")

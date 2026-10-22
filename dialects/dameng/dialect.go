@@ -75,6 +75,22 @@ func (d *dmDialect) DataTypeOf(field *gorm.StructField) string {
 	if typ == "" {
 		panic(fmt.Sprintf("unsupported DM field %s (%s)", field.Name, value.Kind()))
 	}
+	// DM BIT defaults use numeric literals. Translate only a Go boolean's
+	// literal tag value, leaving expressions and cached model metadata intact.
+	if value.Kind() == reflect.Bool && strings.EqualFold(strings.TrimSpace(typ), "BIT") {
+		if literal, ok := field.TagSettingsGet("DEFAULT"); ok {
+			var numeric string
+			switch strings.ToLower(strings.TrimSpace(literal)) {
+			case "true":
+				numeric = "1"
+			case "false":
+				numeric = "0"
+			}
+			if numeric != "" {
+				extra = strings.Replace(extra, strings.TrimSpace("DEFAULT "+literal), "DEFAULT "+numeric, 1)
+			}
+		}
+	}
 	return strings.TrimSpace(typ + " " + extra)
 }
 

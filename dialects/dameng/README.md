@@ -48,8 +48,9 @@ this adapter does not rewrite arbitrary SQL or alter existing objects.
 Strings default to `VARCHAR(255)` and honor `size`; explicit `text`, `longtext`,
 `mediumtext`, `json` and `jsonb` types map to CLOB. The latter two preserve text
 payloads; they do not provide native JSONB operators. Byte slices map to BLOB,
-booleans to BIT, integer identity keys to BIGINT IDENTITY, and times to
-TIMESTAMP(6). Declare CLOB or explicit lengths for large application payloads.
+booleans to BIT (literal `true`/`false` defaults become `1`/`0`), integer identity
+keys to BIGINT IDENTITY, and times to TIMESTAMP(6). Declare CLOB or explicit
+lengths for large application payloads.
 DM timestamp precision and empty-string behavior remain database behavior;
 applications must choose their own versioning and comparison policies.
 

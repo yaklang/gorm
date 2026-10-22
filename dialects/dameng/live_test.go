@@ -187,6 +187,9 @@ func TestDMLiveGenericOperations(t *testing.T) {
 		if err := db.Create(&defaults).Error; err != nil {
 			t.Fatalf("boolean-default create: %v", err)
 		}
+		if !defaults.DefaultTrue || defaults.DefaultFalse {
+			t.Fatal("Create did not return the database's boolean defaults")
+		}
 		var got dmFixtureDefaults
 		if err := db.First(&got, defaults.ID).Error; err != nil {
 			t.Fatal(err)
