@@ -31,8 +31,9 @@ type batchCreateRow struct {
 }
 
 // CreateInBatches inserts a slice of records in batches.
-// Each batch is a single multi-row INSERT statement, reducing round-trips
-// from N to ceil(N/batchSize).
+// Each batch is a multi-row INSERT statement unless the dialect bounds source
+// rows through BatchCreateDialect, for example to read each generated identity
+// safely from its own INSERT result.
 //
 // BeforeSave/BeforeCreate/AfterCreate/AfterSave hooks are called for every
 // element individually, just like v1's Create.
@@ -154,7 +155,13 @@ func createBatch(txn *DB, rv reflect.Value, start, end int, save *batchSave) (in
 
 	var totalRowsAffected int64
 	for groupStart := 0; groupStart < len(rows); {
-		maxRows := maxCreateBatchRows(rows[groupStart].scope.Dialect().GetName(), len(rows[groupStart].columns), len(rows)-groupStart)
+		dialect := rows[groupStart].scope.Dialect()
+		maxRows := maxCreateBatchRows(dialect.GetName(), len(rows[groupStart].columns), len(rows)-groupStart)
+		if extension, ok := dialect.(BatchCreateDialect); ok {
+			if limit := extension.BatchCreateMaxRows(); limit > 0 && limit < maxRows {
+				maxRows = limit
+			}
+		}
 		groupEnd := groupStart + 1
 		for groupEnd < len(rows) && groupEnd-groupStart < maxRows && sameBatchColumns(rows[groupStart].columns, rows[groupEnd].columns) {
 			groupEnd++
@@ -318,15 +325,17 @@ func executeBatchCreateRows(txn *DB, rows []*batchCreateRow, save *batchSave) (i
 	if value, ok := scope.Get("gorm:insert_option"); ok {
 		extraOption = fmt.Sprint(value)
 	}
-	if save != nil && len(columns) > 0 {
-		// Built from the columns this statement really inserts, so rows of
-		// different shapes (explicit id or not, defaulted columns left out)
-		// each get a SET list that matches their INSERT.
-		option, err := save.insertOption(scope, columns)
-		if err != nil {
-			return 0, err
+	var fullSave BatchSaveDialect
+	if save != nil {
+		fullSave, _ = scope.Dialect().(BatchSaveDialect)
+		if fullSave == nil && len(columns) > 0 {
+			// Existing suffix-based dialects keep their original statement path.
+			option, err := save.insertOption(scope, columns)
+			if err != nil {
+				return 0, err
+			}
+			extraOption = option
 		}
-		extraOption = option
 	}
 	var insertModifier string
 	if value, ok := scope.Get("gorm:insert_modifier"); ok {
@@ -336,7 +345,28 @@ func executeBatchCreateRows(txn *DB, rows []*batchCreateRow, save *batchSave) (i
 		}
 	}
 
+	if fullSave != nil && insertModifier != "" {
+		return 0, errors.New("gorm: SaveInBatches full-statement upsert cannot be combined with gorm:insert_modifier")
+	}
+	var quotedTarget, updates []string
+	if fullSave != nil {
+		var err error
+		quotedTarget, updates, err = save.statementColumns(scope, columns)
+		if err != nil {
+			return 0, err
+		}
+		// A blank generated integer primary key identifies a fresh row. There
+		// is no source key to match, so use an ordinary INSERT. Missing logical
+		// conflict columns are never allowed to bypass the upsert builder.
+		if save.generatedPrimaryInsert(scope, columns) {
+			fullSave = nil
+		}
+	}
+
 	if len(columns) == 0 {
+		if fullSave != nil {
+			return 0, errors.New("gorm: SaveInBatches has no values for its conflict target")
+		}
 		if len(rows) != 1 {
 			return 0, fmt.Errorf("gorm: cannot batch multiple DEFAULT VALUES rows")
 		}
@@ -349,6 +379,10 @@ func executeBatchCreateRows(txn *DB, rows []*batchCreateRow, save *batchSave) (i
 		))
 	} else {
 		var placeholders strings.Builder
+		var sourceValues [][]string
+		if fullSave != nil {
+			sourceValues = make([][]string, 0, len(rows))
+		}
 		for rowIndex, row := range rows {
 			if !sameBatchColumns(columns, row.columns) || len(row.values) != len(columns) {
 				return 0, fmt.Errorf("gorm: inconsistent columns in CreateInBatches")
@@ -357,22 +391,41 @@ func executeBatchCreateRows(txn *DB, rows []*batchCreateRow, save *batchSave) (i
 				placeholders.WriteByte(',')
 			}
 			placeholders.WriteByte('(')
+			var sourceRow []string
+			if fullSave != nil {
+				sourceRow = make([]string, 0, len(row.values))
+			}
 			for valueIndex, value := range row.values {
 				if valueIndex > 0 {
 					placeholders.WriteByte(',')
 				}
-				placeholders.WriteString(scope.AddToVars(value))
+				placeholder := scope.AddToVars(value)
+				placeholders.WriteString(placeholder)
+				if fullSave != nil {
+					sourceRow = append(sourceRow, placeholder)
+				}
 			}
 			placeholders.WriteByte(')')
+			if fullSave != nil {
+				sourceValues = append(sourceValues, sourceRow)
+			}
 		}
-		scope.Raw(fmt.Sprintf(
-			"INSERT%v INTO %v (%v) VALUES %v%v",
-			addExtraSpaceIfExist(insertModifier),
-			scope.QuotedTableName(),
-			strings.Join(columns, ","),
-			placeholders.String(),
-			addExtraSpaceIfExist(extraOption),
-		))
+		if fullSave != nil {
+			statement, err := fullSave.BatchSaveSQL(scope.QuotedTableName(), columns, quotedTarget, updates, sourceValues)
+			if err != nil {
+				return 0, err
+			}
+			scope.Raw(statement)
+		} else {
+			scope.Raw(fmt.Sprintf(
+				"INSERT%v INTO %v (%v) VALUES %v%v",
+				addExtraSpaceIfExist(insertModifier),
+				scope.QuotedTableName(),
+				strings.Join(columns, ","),
+				placeholders.String(),
+				addExtraSpaceIfExist(extraOption),
+			))
+		}
 	}
 
 	result, err := scope.SQLDB().Exec(scope.SQL, scope.SQLVars...)
@@ -388,7 +441,11 @@ func executeBatchCreateRows(txn *DB, rows []*batchCreateRow, save *batchSave) (i
 	// last-insert-id arithmetic would write wrong primary keys into the caller's
 	// structs. A save leaves them alone.
 	if save == nil {
-		if err := assignBatchPrimaryKeys(scope.Dialect().GetName(), rows, rowsAffected, result.LastInsertId); err != nil {
+		if extension, ok := scope.Dialect().(BatchCreateDialect); ok && extension.BatchCreateMaxRows() == 1 {
+			if err := assignSingleBatchPrimaryKey(rows, rowsAffected, result.LastInsertId); err != nil {
+				return rowsAffected, err
+			}
+		} else if err := assignBatchPrimaryKeys(scope.Dialect().GetName(), rows, rowsAffected, result.LastInsertId); err != nil {
 			return rowsAffected, err
 		}
 	}
@@ -404,6 +461,23 @@ func executeBatchCreateRows(txn *DB, rows []*batchCreateRow, save *batchSave) (i
 		}
 	}
 	return rowsAffected, nil
+}
+
+// assignSingleBatchPrimaryKey reads the result belonging to this row. Unlike
+// multi-row assignment it does not infer IDs from a database sequence.
+func assignSingleBatchPrimaryKey(rows []*batchCreateRow, rowsAffected int64, lastInsertID func() (int64, error)) error {
+	if len(rows) != 1 || rowsAffected != 1 {
+		return nil
+	}
+	field := rows[0].primaryField
+	if field == nil || !field.IsBlank {
+		return nil
+	}
+	id, err := lastInsertID()
+	if err != nil {
+		return err
+	}
+	return field.Set(id)
 }
 
 func assignBatchPrimaryKeys(dialect string, rows []*batchCreateRow, rowsAffected int64, lastInsertID func() (int64, error)) error {

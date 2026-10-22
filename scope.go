@@ -479,7 +479,7 @@ func (scope *Scope) callMethod(methodName string, reflectValue reflect.Value) {
 }
 
 var (
-	columnRegexp        = regexp.MustCompile("^[a-zA-Z\\d]+(\\.[a-zA-Z\\d]+)*$") // only match string like `name`, `users.name`
+	columnRegexp        = regexp.MustCompile("^[a-zA-Z_\\d]+(\\.[a-zA-Z_\\d]+)*$") // identifiers such as `item_key`, `users.item_key`; expressions stay raw
 	isNumberRegexp      = regexp.MustCompile("^\\s*\\d+\\s*$")                   // match if string is number
 	comparisonRegexp    = regexp.MustCompile("(?i) (=|<>|(>|<)(=?)|LIKE|IS|IN) ")
 	countingQueryRegexp = regexp.MustCompile("(?i)^count(.+)$")
