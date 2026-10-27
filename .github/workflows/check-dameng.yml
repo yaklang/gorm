@@ -22,14 +22,28 @@ jobs:
         run: |
           set -euo pipefail
           go list -mod=readonly -deps ./... > "$RUNNER_TEMP/gorm-default-deps.txt"
-          if grep -E '^(plugin|gitee.com/chunanyong/dm(/.*)?)$' "$RUNNER_TEMP/gorm-default-deps.txt"; then
+          if grep -E '^(plugin|gitee.com/chunanyong/dm(/.*)?|github.com/yaklang/gorm/dm(/.*)?)$' "$RUNNER_TEMP/gorm-default-deps.txt"; then
             echo 'Ordinary GORM builds must not include the optional DM driver' >&2
             exit 1
           fi
       - name: Run SQLite and optional dialect unit tests
         run: go test -mod=readonly -race ./... -count=1 -timeout=5m
       - name: Run native driver unit tests
-        run: go test -mod=readonly -race -tags dameng ./dialects/dameng -count=1 -timeout=2m
+        shell: bash
+        run: |
+          set -euo pipefail
+          go list -mod=readonly -deps -tags dameng ./dialects/dameng > "$RUNNER_TEMP/gorm-native-deps.txt"
+          grep -Fx 'github.com/yaklang/gorm/dm' "$RUNNER_TEMP/gorm-native-deps.txt"
+          if grep -E '^gitee.com/chunanyong/dm(/.*)?$' "$RUNNER_TEMP/gorm-native-deps.txt"; then
+            echo 'Native DM builds must use only the GitHub driver module' >&2
+            exit 1
+          fi
+          go list -mod=readonly -m all > "$RUNNER_TEMP/gorm-modules.txt"
+          if grep -E '^gitee.com/chunanyong/dm( |$)' "$RUNNER_TEMP/gorm-modules.txt"; then
+            echo 'The Gitee driver must not remain in the module graph' >&2
+            exit 1
+          fi
+          go test -mod=readonly -race -tags dameng ./dialects/dameng -count=1 -timeout=2m
       - name: Vet both driver configurations
         run: |
           go vet -mod=readonly ./...
@@ -63,3 +77,44 @@ jobs:
           cache: true
       - name: Run PostgreSQL regression
         run: go test -mod=readonly ./... -count=1 -timeout=5m
+
+  dm-driver:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    env:
+      GOWORK: 'off'
+      GOPROXY: https://proxy.golang.org
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: '1.22.12'
+          cache: true
+          cache-dependency-path: dm/go.sum
+      - name: Verify the committed upstream snapshot
+        working-directory: dm
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          root = Path.cwd()
+          provenance = json.loads((root / 'UPSTREAM.json').read_text())
+          files = provenance['files']
+          expected = {item['mirror_path'] for item in files}
+          expected.update({'LICENSE', 'README.md', 'UPSTREAM.json', 'driver_test.go', 'verify_upstream.py'})
+          actual = {str(path.relative_to(root)) for path in root.rglob('*') if path.is_file()}
+          if actual != expected:
+              raise SystemExit('driver snapshot has added or missing files')
+          for item in files:
+              path = root / item['mirror_path']
+              if path.is_symlink() or hashlib.sha256(path.read_bytes()).hexdigest() != item['mirror_sha256']:
+                  raise SystemExit('driver snapshot checksum mismatch: ' + item['mirror_path'])
+          print('Verified %d pinned upstream files without fetching the original repository.' % len(files))
+          PY
+      - name: Run relocated driver tests and vet
+        working-directory: dm
+        run: |
+          go test -mod=readonly -race ./... -count=1 -timeout=3m
+          go vet -mod=readonly ./...

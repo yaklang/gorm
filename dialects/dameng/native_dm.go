@@ -7,7 +7,7 @@ import (
 	"database/sql/driver"
 	"net"
 
-	dm "gitee.com/chunanyong/dm"
+	dm "github.com/yaklang/gorm/dm"
 )
 
 // This is the only production file that imports the upstream native driver.
