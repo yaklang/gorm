@@ -3,7 +3,6 @@ module github.com/yaklang/gorm
 go 1.22
 
 require (
-	gitee.com/chunanyong/dm v1.8.23
 	github.com/denisenkom/go-mssqldb v0.12.3
 	github.com/erikstmartin/go-testdb v0.0.0-20160219214506-8d10e4a1bae5
 	github.com/go-sql-driver/mysql v1.7.1
@@ -22,5 +21,6 @@ require (
 
 require (
 	github.com/golang/snappy v0.0.1 // indirect
+	github.com/yaklang/gorm/dm v0.0.0-20261027074109-c09736ed36a6
 	golang.org/x/text v0.3.6 // indirect
 )

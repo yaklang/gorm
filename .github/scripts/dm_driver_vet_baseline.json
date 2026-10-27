@@ -1,0 +1,212 @@
+{
+  "upstream": "gitee.com/chunanyong/dm@v1.8.23",
+  "upstream_commit": "8ba262af5d7ddcd733eb21e7485f8831689d8c28",
+  "reason": "Unchanged upstream findings verified against the original module; allow only exact known paths, lines and messages. Parent GORM vet remains strict. Different Go analyzers may report a subset.",
+  "diagnostics": [
+    {
+      "path": "parser/zu.go",
+      "line": 858,
+      "message": "unreachable code"
+    },
+    {
+      "path": "parser/zu.go",
+      "line": 885,
+      "message": "unreachable code"
+    },
+    {
+      "path": "parser/zu.go",
+      "line": 893,
+      "message": "unreachable code"
+    },
+    {
+      "path": "parser/zu.go",
+      "line": 901,
+      "message": "unreachable code"
+    },
+    {
+      "path": "parser/zu.go",
+      "line": 909,
+      "message": "unreachable code"
+    },
+    {
+      "path": "parser/zu.go",
+      "line": 942,
+      "message": "unreachable code"
+    },
+    {
+      "path": "parser/zu.go",
+      "line": 960,
+      "message": "unreachable code"
+    },
+    {
+      "path": "parser/zu.go",
+      "line": 978,
+      "message": "unreachable code"
+    },
+    {
+      "path": "parser/zu.go",
+      "line": 996,
+      "message": "unreachable code"
+    },
+    {
+      "path": "parser/zu.go",
+      "line": 1024,
+      "message": "unreachable code"
+    },
+    {
+      "path": "parser/zu.go",
+      "line": 1068,
+      "message": "unreachable code"
+    },
+    {
+      "path": "parser/zu.go",
+      "line": 1076,
+      "message": "unreachable code"
+    },
+    {
+      "path": "parser/zu.go",
+      "line": 1084,
+      "message": "unreachable code"
+    },
+    {
+      "path": "parser/zu.go",
+      "line": 1092,
+      "message": "unreachable code"
+    },
+    {
+      "path": "parser/zu.go",
+      "line": 1100,
+      "message": "unreachable code"
+    },
+    {
+      "path": "parser/zu.go",
+      "line": 1118,
+      "message": "unreachable code"
+    },
+    {
+      "path": "parser/zu.go",
+      "line": 1149,
+      "message": "unreachable code"
+    },
+    {
+      "path": "parser/zu.go",
+      "line": 1157,
+      "message": "unreachable code"
+    },
+    {
+      "path": "parser/zu.go",
+      "line": 1183,
+      "message": "unreachable code"
+    },
+    {
+      "path": "parser/zu.go",
+      "line": 1191,
+      "message": "unreachable code"
+    },
+    {
+      "path": "parser/zu.go",
+      "line": 1199,
+      "message": "unreachable code"
+    },
+    {
+      "path": "security/zzf.go",
+      "line": 132,
+      "message": "possible misuse of unsafe.Pointer"
+    },
+    {
+      "path": "security/zzf.go",
+      "line": 139,
+      "message": "possible misuse of unsafe.Pointer"
+    },
+    {
+      "path": "m.go",
+      "line": 340,
+      "message": "database/sql/driver.TxOptions struct literal uses unkeyed fields"
+    },
+    {
+      "path": "h.go",
+      "line": 15,
+      "message": "encodeByString passes lock by value: github.com/yaklang/gorm/dm.DmConnection contains sync.Mutex"
+    },
+    {
+      "path": "h.go",
+      "line": 23,
+      "message": "encodeByTime passes lock by value: github.com/yaklang/gorm/dm.DmConnection contains sync.Mutex"
+    },
+    {
+      "path": "h.go",
+      "line": 797,
+      "message": "toDate passes lock by value: github.com/yaklang/gorm/dm.DmConnection contains sync.Mutex"
+    },
+    {
+      "path": "m.go",
+      "line": 468,
+      "message": "assignment copies lock value to newConn.mu: sync.Mutex"
+    },
+    {
+      "path": "m.go",
+      "line": 470,
+      "message": "assignment copies lock value to *dc: github.com/yaklang/gorm/dm.DmConnection contains sync.Mutex"
+    },
+    {
+      "path": "zi.go",
+      "line": 183,
+      "message": "call of toDate copies lock value: github.com/yaklang/gorm/dm.DmConnection contains sync.Mutex"
+    },
+    {
+      "path": "zi.go",
+      "line": 442,
+      "message": "call of encodeByString copies lock value: github.com/yaklang/gorm/dm.DmConnection contains sync.Mutex"
+    },
+    {
+      "path": "zi.go",
+      "line": 453,
+      "message": "call of encodeByString copies lock value: github.com/yaklang/gorm/dm.DmConnection contains sync.Mutex"
+    },
+    {
+      "path": "zi.go",
+      "line": 464,
+      "message": "call of encodeByString copies lock value: github.com/yaklang/gorm/dm.DmConnection contains sync.Mutex"
+    },
+    {
+      "path": "zi.go",
+      "line": 475,
+      "message": "call of encodeByString copies lock value: github.com/yaklang/gorm/dm.DmConnection contains sync.Mutex"
+    },
+    {
+      "path": "zi.go",
+      "line": 486,
+      "message": "call of encodeByString copies lock value: github.com/yaklang/gorm/dm.DmConnection contains sync.Mutex"
+    },
+    {
+      "path": "zi.go",
+      "line": 718,
+      "message": "call of encodeByTime copies lock value: github.com/yaklang/gorm/dm.DmConnection contains sync.Mutex"
+    },
+    {
+      "path": "zx.go",
+      "line": 143,
+      "message": "assignment copies lock value to standbyConnectorValue: github.com/yaklang/gorm/dm.DmConnector contains sync.Mutex"
+    },
+    {
+      "path": "zx.go",
+      "line": 265,
+      "message": "assignment copies lock value to standbyConnectorValue: github.com/yaklang/gorm/dm.DmConnector contains sync.Mutex"
+    },
+    {
+      "path": "h.go",
+      "line": 212,
+      "message": "value[8] (8 bits) too small for shift of 8"
+    },
+    {
+      "path": "h.go",
+      "line": 212,
+      "message": "value[9] (8 bits) too small for shift of 16"
+    },
+    {
+      "path": "h.go",
+      "line": 217,
+      "message": "value[12] (8 bits) too small for shift of 24"
+    }
+  ]
+}

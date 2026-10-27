@@ -84,10 +84,27 @@ must be checked against the target DM version and configuration.
 
 ## Driver isolation and cancellation
 
-Only `native_dm.go` imports `gitee.com/chunanyong/dm`. Ordinary builds, including
+Only `native_dm.go` imports the independent `github.com/yaklang/gorm/dm` driver
+module from this repository's `dm/` directory. Ordinary builds, including
 SQLite/PostgreSQL consumers, do not import its SDK or `plugin` loader. DM-enabled
 builds retain the upstream native protocol and optional cipher plugin loader.
-This is dependency isolation, not a replacement implementation of the driver.
+The driver snapshot is a module-path relocation of `gitee.com/chunanyong/dm
+v1.8.23`; its source, checksums, synchronization and licensing status are recorded
+in `dm/UPSTREAM.json` and `dm/README.md`. The parent GORM MIT License does not
+relicense the driver.
+
+The child module is independently versioned. A public immutable driver version
+must be available before the parent module or applications pin it; local
+`replace` directives are not inherited by consumers. The current pseudo-version
+is a review candidate, not a tagged driver release. Review the outstanding
+upstream redistribution authorization before merging or publishing the mirror.
+
+The child driver's full vet run retains existing upstream findings, including
+unreachable parser statements, lock copies, unsafe pointer conversions and
+shifts. CI compares every finding's path, line and message against
+`.github/scripts/dm_driver_vet_baseline.json` and rejects new or changed findings;
+different Go versions may report a subset. It does not disable those analyzers.
+The parent GORM default and native adapter vet checks remain strict.
 
 Each physical connection receives a private upstream connector. Handshakes
 through this adapter are serialized to protect upstream mutable global state.
