@@ -1,0 +1,14 @@
+Upstream driver licensing notice
+
+The mirrored driver source retains the following upstream notice:
+
+    Copyright (c) 2000-2018, 达梦数据库有限公司.
+    All rights reserved.
+
+The pinned upstream v1.8.23 module did not include a standalone license grant.
+Its source location and exact checksums are recorded in UPSTREAM.json.
+
+The MIT License of the parent GORM module must not be interpreted as licensing
+or relicensing this third-party driver. This notice does not grant additional
+rights or establish redistribution authorization. Applicable driver licensing
+and redistribution terms must be confirmed with the rights holder separately.
