@@ -99,6 +99,13 @@ must be available before the parent module or applications pin it; local
 is a review candidate, not a tagged driver release. Review the outstanding
 upstream redistribution authorization before merging or publishing the mirror.
 
+The child driver's full vet run retains existing upstream findings, including
+unreachable parser statements, lock copies, unsafe pointer conversions and
+shifts. CI compares every finding's path, line and message against
+`.github/scripts/dm_driver_vet_baseline.json` and rejects new or changed findings;
+different Go versions may report a subset. It does not disable those analyzers.
+The parent GORM default and native adapter vet checks remain strict.
+
 Each physical connection receives a private upstream connector. Handshakes
 through this adapter are serialized to protect upstream mutable global state.
 Context cancellation closes the underlying socket rather than closing active

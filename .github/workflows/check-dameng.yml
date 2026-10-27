@@ -113,8 +113,8 @@ jobs:
                   raise SystemExit('driver snapshot checksum mismatch: ' + item['mirror_path'])
           print('Verified %d pinned upstream files without fetching the original repository.' % len(files))
           PY
-      - name: Run relocated driver tests and vet
+      - name: Run relocated driver tests
         working-directory: dm
-        run: |
-          go test -mod=readonly -race ./... -count=1 -timeout=3m
-          go vet -mod=readonly ./...
+        run: go test -mod=readonly -race ./... -count=1 -timeout=3m
+      - name: Check unchanged upstream vet baseline
+        run: python3 .github/scripts/check_dm_driver_vet.py
